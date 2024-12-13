@@ -261,7 +261,7 @@ class XeroClient():
         request = requests.Request("GET", url, headers=headers, params=params) 
         response = self.session.send(request.prepare())
 
-        if response.status_code == 401:
+        if response.status_code in (400, 401):
             LOGGER.warning("401 Unauthorized. Refreshing credentials...")
             self.refresh_credentials()  
             headers["Authorization"] = "Bearer " + self.access_token
