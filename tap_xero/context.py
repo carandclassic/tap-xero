@@ -3,19 +3,19 @@ from singer import bookmarks as bks_
 from .client import XeroClient
 
 
-class Context():
+class Context:
     def __init__(self, config, state, catalog, config_path):
         self.config = config
         self.config_path = config_path
         self.state = state
         self.catalog = catalog
-        self.client = XeroClient(config)
+        self.client = XeroClient(self)
 
     def refresh_credentials(self):
-        self.client.refresh_credentials(self.config, self.config_path, self.state)
+        self.client.refresh_credentials()
 
     def check_platform_access(self):
-        self.client.check_platform_access(self.config, self.config_path, self.state)
+        self.client.check_platform_access()
 
     def get_bookmark(self, path):
         return bks_.get_bookmark(self.state, *path)
@@ -42,3 +42,4 @@ class Context():
 
     def write_state(self):
         singer.write_state(self.state)
+

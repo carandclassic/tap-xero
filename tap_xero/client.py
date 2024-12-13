@@ -178,19 +178,26 @@ def retry_after_wait_gen():
         yield math.floor(float(sleep_time_str))
 
 class XeroClient():
-    def __init__(self, config):
+    def __init__(self, context):
+        # Get the necessary values directly from the context
         self.session = requests.Session()
-        self.user_agent = config.get("user_agent")
+        self.user_agent = context.config.get("user_agent")
         self.tenant_id = None
         self.access_token = None
+        self.context = context  # Save the context for later use
 
-    def refresh_credentials(self, config, config_path, state):
+    def refresh_credentials(self):
+        # Access values from the context instead of parameters
+        config = self.context.config
+        config_path = self.context.config_path
+        state = self.context.state
 
         header_token = b64encode((config["client_id"] + ":" + config["client_secret"]).encode('utf-8'))
 
         headers = {
             "Authorization": "Basic " + header_token.decode('utf-8'),
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Connection": "keep-alive"
         }
 
         post_body = {
@@ -198,7 +205,6 @@ class XeroClient():
             "refresh_token": config["refresh_token"] if state.get("refresh_token") is None else state.get("refresh_token"),
         }
         resp = self.session.post("https://identity.xero.com/connect/token", headers=headers, data=post_body)
-
         if resp.status_code != 200:
             raise_for_error(resp)
         else:
@@ -211,34 +217,39 @@ class XeroClient():
             self.access_token = resp["access_token"]
             self.tenant_id = config['tenant_id']
 
-
     @backoff.on_exception(backoff.expo, (json.decoder.JSONDecodeError, XeroInternalError), max_tries=3)
     @backoff.on_exception(retry_after_wait_gen, XeroTooManyInMinuteError, giveup=is_not_status_code_fn([429]), jitter=None, max_tries=3)
-    def check_platform_access(self, config, config_path, state):
+    def check_platform_access(self):
+        # Access values from the context instead of parameters
+        config = self.context.config
+        config_path = self.context.config_path
+        state = self.context.state
 
-        # Validating the authentication of the provided configuration
-        self.refresh_credentials(config, config_path, state)
-
+        self.refresh_credentials()
         headers = {
             "Authorization": "Bearer " + self.access_token,
             "Xero-Tenant-Id": self.tenant_id,
             "Content-Type": "application/json"
         }
-
-        # Validating the authorization of the provided configuration
-        currencies_url = join(BASE_URL, "Currencies")
+        currencies_url = f"{BASE_URL}/Currencies"
+        LOGGER.info(f"URL: {currencies_url}")
         request = requests.Request("GET", currencies_url, headers=headers)
+        prepared_request = self.session.prepare_request(request)
+        LOGGER.info(f"URL: {prepared_request.url}")
         response = self.session.send(request.prepare())
-
         if response.status_code != 200:
             raise_for_error(response)
-
 
     @backoff.on_exception(backoff.expo, (json.decoder.JSONDecodeError, XeroInternalError), max_tries=3)
     @backoff.on_exception(retry_after_wait_gen, XeroTooManyInMinuteError, giveup=is_not_status_code_fn([429]), jitter=None, max_tries=3)
     def filter(self, tap_stream_id, since=None, **params):
+        # Access values from the context instead of parameters
+        config = self.context.config
+        config_path = self.context.config_path
+        state = self.context.state
+
         xero_resource_name = tap_stream_id.title().replace("_", "")
-        url = join(BASE_URL, xero_resource_name)
+        url = f"{BASE_URL}/{xero_resource_name}"
         headers = {"Accept": "application/json",
                    "Authorization": "Bearer " + self.access_token,
                    "Xero-tenant-id": self.tenant_id}
@@ -247,16 +258,20 @@ class XeroClient():
         if since:
             headers["If-Modified-Since"] = since
 
-        request = requests.Request("GET", url, headers=headers, params=params)
+        request = requests.Request("GET", url, headers=headers, params=params) 
         response = self.session.send(request.prepare())
+
+        if response.status_code == 401:
+            LOGGER.warning("401 Unauthorized. Refreshing credentials...")
+            self.refresh_credentials()  
+            headers["Authorization"] = "Bearer " + self.access_token
+            response = self.session.send(request.prepare())
 
         if response.status_code != 200:
             raise_for_error(response)
             return None
         else:
-            response_meta = json.loads(response.text,
-                                    object_hook=_json_load_object_hook,
-                                    parse_float=decimal.Decimal)
+            response_meta = json.loads(response.text, object_hook=_json_load_object_hook, parse_float=decimal.Decimal)
             response_body = response_meta.pop(xero_resource_name)
             return response_body
 
